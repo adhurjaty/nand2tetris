@@ -39,5 +39,42 @@ CHIP CPU {
         pc[15];          // address of next instruction
 
     PARTS:
-    // Put your code here:
+    // write to register A
+    Not(in=instruction[15], out=notc);
+    Mux16(a=aluout, b=instruction, sel=notc, out=ain);
+
+    And(a=instruction[15], b=instruction[5], out=cloada);
+    Or(a=notc, b=cloada, out=loada);
+
+    ARegister(in=ain, load=loada, out=aout, out[0..14]=addressM);
+
+    // set writeM
+    And(a=instruction[15], b=instruction[3], out=writeM);
+
+    // write to register D
+    And(a=instruction[15], b=instruction[4], out=loadd);
+    DRegister(in=aluout, load=loadd, out=dout);
+
+    // choose A or M into ALU
+    And(a=instruction[15], b=instruction[12], out=isM);
+    Mux16(a=aout, b=inM, sel=isM, out=amout);
+
+    ALU(x=dout, y=amout, zx=instruction[11], nx=instruction[10], zy=instruction[9], 
+        ny=instruction[8], f=instruction[7], no=instruction[6], out=aluout, out=outM, 
+        zr=zr, ng=ng);
+
+    // jump conditions
+    And(a=instruction[1], b=zr, out=eq);
+    And(a=instruction[2], b=ng, out=lt);
+    Not(in=zr, out=nzr);
+    Not(in=ng, out=nng);
+    And(a=nzr, b=nng, out=nzg);
+    And(a=instruction[0], b=nzg, out=gt);
+
+    Or(a=eq, b=lt, out=or1);
+    Or(a=or1, b=gt, out=or2);
+    And(a=instruction[15], b=or2, out=isJmp);
+    Not(in=isJmp, out=noIsJmp);
+
+    PC(in=aout, load=isJmp, inc=noIsJmp, reset=reset, out[0..14]=pc);
 }

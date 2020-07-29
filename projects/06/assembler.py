@@ -74,7 +74,7 @@ alu_oper_cmds = {
 }
 
 
-class SymbolTable:
+class LabelSymParser:
     sym_table = {}
     cur_address = 0
     instruction_num = 0
@@ -84,24 +84,42 @@ class SymbolTable:
         self.cur_address = start_address
 
     def parse(self, line):
-        symbol = ''
-        
-        a_sym_regex = r'\@(' + valid_symbol + r')'
+        # a_sym_regex = r'\@(' + valid_symbol + r')'
 
-        if match := re.match(a_sym_regex, line):
-            symbol = match.group(1)
-            if symbol not in self.sym_table:
-                self.sym_table[symbol] = self.cur_address
-                self.cur_address += 1
+        # if match := re.match(a_sym_regex, line):
+        #     symbol = match.group(1)
+        #     if symbol not in self.sym_table:
+        #         self.sym_table[symbol] = self.cur_address
+        #         print(symbol, self.cur_address)
+        #         self.cur_address += 1
         
         if match := re.match(l_regex, line):
             symbol = match.group(1)
             self.sym_table[symbol] = self.instruction_num
-            self.instruction_num -= 1
+        else:
+            self.instruction_num += 1
 
-        self.instruction_num += 1
         return 'hack'
-    
+
+
+class SymTable:
+    sym_table = {}
+    cur_address = 0
+
+    def __init__(self, sym_table, start_address=0x10):
+        self.sym_table = sym_table
+        self.cur_address = start_address
+
+    def add(self, label):
+        if label not in self.sym_table and re.match(valid_symbol, label):
+            self.sym_table[label] = self.cur_address
+            self.cur_address += 1
+        
+    def get(self, label):
+        if label in self.sym_table:
+            return self.sym_table[label]
+        return int(label)
+        
 
 class Command:
     text = ''
@@ -110,7 +128,8 @@ class Command:
     dest = 0
     comp = 0
     jump = 0
-    sym_table = {}
+
+    sym_table = None
 
     def __init__(self, text, sym_table):
         self.text = text
@@ -121,11 +140,12 @@ class Command:
         if match := re.match(a_regex, self.text):
             self.command_type = 'A'
             self.symbol = match.group(1)
+            self.sym_table.add(self.symbol)
             return
         
         if match := re.match(l_regex, self.text):
             self.command_type = 'L'
-            self.set_symbol = match.group(1)
+            self.symbol = match.group(1)
             return
 
         if match := re.match(c_regex, self.text):
@@ -148,24 +168,19 @@ class Command:
 
     def set_equality(self, reg, oper):
         self.jump = 0
-        self.dest = self.sym_table[reg]
+        self.dest = self.sym_table.get(reg)
         self.comp = alu_oper_cmds[oper]
         if 'M' in oper:
             self.comp += 0b1000000
 
     def set_jump(self, reg, code):
         self.dest = 0
-        self.jump = self.sym_table[code]
+        self.jump = self.sym_table.get(code)
         self.comp = alu_oper_cmds[reg]
-
-    def get_symbol_val(self):
-        if self.symbol in self.sym_table:
-            return self.sym_table[self.symbol] 
-        return int(self.symbol)
 
     def __str__(self):
         if self.command_type == 'A':
-            return format(self.get_symbol_val(), '016b')
+            return format(self.sym_table.get(self.symbol), '016b')
         if self.command_type == 'L':
             return ''
 
@@ -213,7 +228,7 @@ def assemble_asm(filename):
     out_file = os.path.join(os.path.dirname(filename), f'{basename}.hack')
 
     lines = []
-    sym = SymbolTable()
+    sym = LabelSymParser()
     with open(filename, 'r') as f:
         sym_parser = Parser(f, sym)
         sym_parser.advance()
@@ -221,7 +236,8 @@ def assemble_asm(filename):
             sym_parser.advance()
 
     with open(filename, 'r') as f:
-        parser = Parser(f, CommandLineParser(sym.sym_table))
+        sym_table = SymTable(sym.sym_table)
+        parser = Parser(f, CommandLineParser(sym_table))
         parser.advance()
         while parser.has_more_commands():
             line = str(parser.cur_command)
@@ -244,6 +260,9 @@ if __name__ == '__main__':
         'rect/Rect.asm',
         'rect/RectL.asm'
     ]
+    # files = [
+    #     'pong/Pong.asm',
+    # ]
 
     for asm in files:
         filename = os.path.join(script_dir, asm)

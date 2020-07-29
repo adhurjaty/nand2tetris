@@ -77,24 +77,29 @@ alu_oper_cmds = {
 class SymbolTable:
     sym_table = {}
     cur_address = 0
+    instruction_num = 0
 
-    def __init__(self, start_address=0xA):
+    def __init__(self, start_address=0x10):
         self.sym_table = dict(**predefined_symbol_table)
         self.cur_address = start_address
 
     def parse(self, line):
         symbol = ''
         
-        if match := re.match(a_regex, line):
+        a_sym_regex = r'\@(' + valid_symbol + r')'
+
+        if match := re.match(a_sym_regex, line):
             symbol = match.group(1)
+            if symbol not in self.sym_table:
+                self.sym_table[symbol] = self.cur_address
+                self.cur_address += 1
         
         if match := re.match(l_regex, line):
             symbol = match.group(1)
+            self.sym_table[symbol] = self.instruction_num
+            self.instruction_num -= 1
 
-        if symbol and symbol not in self.sym_table:
-            self.sym_table[symbol] = self.cur_address
-            self.cur_address += 1
-
+        self.instruction_num += 1
         return 'hack'
     
 
@@ -149,12 +154,14 @@ class Command:
             self.comp += 0b1000000
 
     def set_jump(self, reg, code):
-        self.dest = self.sym_table[reg]
+        self.dest = 0
         self.jump = self.sym_table[code]
         self.comp = alu_oper_cmds[reg]
 
     def get_symbol_val(self):
-        return self.sym_table[self.symbol]
+        if self.symbol in self.sym_table:
+            return self.sym_table[self.symbol] 
+        return int(self.symbol)
 
     def __str__(self):
         if self.command_type == 'A':
@@ -187,7 +194,7 @@ class Parser:
         return self.cur_command is not None or peek_line(self.f) != ''
 
     def advance(self):
-        for line in f:
+        for line in self.f:
             cmd = self.clean_line(line)
             if cmd != '':
                 self.cur_command = self.line_parser.parse(cmd)
@@ -199,10 +206,13 @@ class Parser:
             re.sub(r'\/\/.*$', '', line)).strip()
     
 
-if __name__ == '__main__':
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    filename = os.path.join(script_dir, 'max/Max.asm')
-    
+
+def assemble_asm(filename):
+    basename = os.path.basename(filename)
+    basename = basename.split('.')[0]
+    out_file = os.path.join(os.path.dirname(filename), f'{basename}.hack')
+
+    lines = []
     sym = SymbolTable()
     with open(filename, 'r') as f:
         sym_parser = Parser(f, sym)
@@ -216,7 +226,27 @@ if __name__ == '__main__':
         while parser.has_more_commands():
             line = str(parser.cur_command)
             if line:
-                print(line)
+                lines.append(line)
             parser.advance()
+
+    with open(out_file, 'w') as f:
+        f.write('\n'.join(lines))
+
+if __name__ == '__main__':
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    
+    files = [
+        'add/Add.asm', 
+        'max/Max.asm', 
+        'max/MaxL.asm', 
+        'pong/Pong.asm',
+        'pong/PongL.asm',
+        'rect/Rect.asm',
+        'rect/RectL.asm'
+    ]
+
+    for asm in files:
+        filename = os.path.join(script_dir, asm)
+        assemble_asm(filename)
     
     

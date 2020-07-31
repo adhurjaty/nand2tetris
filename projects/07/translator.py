@@ -9,9 +9,42 @@ def unindent_multiline(s):
     return '\n'.join(line.strip() for line in s.split('\n')).strip()
 
 
+cond_key = 0
+def conditional(cond):
+    global cond_key
+    output = unindent_multiline(f'''
+        M=M-D
+        D=A
+        @R14
+        M=D
+        A=M
+        D=M
+        @CONDITIONALJUMP.TRUE.{cond_key}
+        D;J{cond}
+        D=0
+        @CONDITIONALJUMP.END.{cond_key}
+        0;JMP
+        (CONDITIONALJUMP.TRUE.{cond_key})
+        D=-1
+        (CONDITIONALJUMP.END.{cond_key})
+        @R14
+        A=M
+        M=D
+        ''')
+    cond_key += 1
+    return output
+
+
 operations_dict = {
-    'add': '+',
-    'sub': '-'
+    'add': lambda: 'M=M+D',
+    'sub': lambda: 'M=M-D',
+    'neg': lambda: 'M=-M',
+    'and': lambda: 'M=M&D',
+    'or': lambda: 'M=M|D',
+    'not': lambda: 'M=!M',
+    'gt': lambda: conditional('GT'),
+    'lt': lambda: conditional('LT'),
+    'eq': lambda: conditional('EQ')
 }
 
 
@@ -49,6 +82,21 @@ def temp_fn(arg):
     return f'@{offset}'
 
 
+def pointer_fn(arg):
+    if int(arg) >= 2:
+        raise Exception('Cannot have a pointer arg > 1')
+
+    symbol = 'THIS' if arg == '0' else 'THAT'
+    return f'@{symbol}'
+
+
+def static_fn_wrapper(name):
+    def static_fn(arg):
+        return f'@{name}.{arg}'
+
+    return static_fn
+
+
 symbol_fns = {
     'constant': const_fn,
     'local': local_fn,
@@ -57,7 +105,7 @@ symbol_fns = {
     'that': that_fn,
     'temp': temp_fn,
     'static': None,
-    'pointer': None
+    'pointer': pointer_fn
 }
 
 class Command:
@@ -90,14 +138,21 @@ class ArithmeticCommand(Command):
         self.arg1 = arg
 
     def cmd_str(self):
-        operation = operations_dict[self.arg1]
+        operation = operations_dict[self.arg1]()
+
+        extra_pop = ''
+        if 'D' in operation:
+            extra_pop = unindent_multiline(f'''
+                D=M
+                {self.decrement_sp()}
+                A=M
+                ''')
+
         return unindent_multiline(f'''
             {self.decrement_sp()}
             A=M
-            D=M
-            {self.decrement_sp()}
-            A=M
-            M=M{operation}D
+            {extra_pop}
+            {operation}
             {self.increment_sp()}
             ''')
 
@@ -189,6 +244,11 @@ def translate_file(name):
     filename = os.path.join(script_dir, name)
     out_file = change_ext(filename, 'asm')
 
+    basename = os.path.basename(filename)
+    basename = basename.split('.')[0]
+
+    symbol_fns['static'] = static_fn_wrapper(basename)
+
     with open(filename, 'r') as f:
         cmds = list(Parser(f).parse())
 
@@ -197,6 +257,8 @@ def translate_file(name):
 
 
 if __name__ == '__main__':
-    # filename = os.path.join(script_dir, 'StackArithmetic/SimpleAdd/SimpleAdd.vm')
-    filename = os.path.join(script_dir, 'MemoryAccess/BasicTest/BasicTest.vm')
-    translate_file(filename)
+    # filename = os.path.join(script_dir, 'MemoryAccess/BasicTest/BasicTest.vm')
+    # translate_file('MemoryAccess/PointerTest/PointerTest.vm')
+    # translate_file('StackArithmetic/SimpleAdd/SimpleAdd.vm')
+    translate_file('StackArithmetic/StackTest/StackTest.vm')
+    # translate_file('MemoryAccess/StaticTest/StaticTest.vm')

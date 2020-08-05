@@ -113,7 +113,10 @@ class SymbolFns:
         self.symbol_fns['static'] = static_fn_wrapper(name)
 
     def get(self, name):
-        return self.symbol_fns[name]
+        return self.symbol_fns.get(name) or (lambda a: symbol_fn(name, a))
+
+    def is_constant(self, name):
+        return name == 'constant' or name not in self.symbol_fns.keys()
 
 
 class Command:
@@ -136,9 +139,42 @@ class Command:
             ''')
 
 
-class ReturnCommand(Command):
+class LabelCommand(Command):
+    name = ''
+
+    def __init__(self, name, label):
+        self.name = name
+        self.arg1 = label
+
+    def jump_label(self):
+        return f'{self.name}${self.arg1}'
+
     def cmd_str(self):
-        return 'probably a jump statement'
+        return f'({self.jump_label()})'
+
+
+class GotoCommand(LabelCommand):
+    def __init__(self, name, label):
+        super().__init__(name, label)
+
+    def cmd_str(self):
+        return unindent_multiline(f'''
+            @{self.jump_label()}
+            0;JMP
+            ''')
+
+class IfGotoCommand(LabelCommand):
+    def __init__(self, name, label):
+        super().__init__(name, label)
+
+    def cmd_str(self):
+        return unindent_multiline(f'''
+            {self.decrement_sp()}
+            A=M
+            D=M
+            @{self.jump_label()}
+            D;JNE
+            ''')
 
 
 class ArithmeticCommand(Command):
@@ -175,11 +211,8 @@ class StackChangeCommand(Command):
 
 
 class PushCommand(StackChangeCommand):
-    def __init__(self, tokens, sym_fns):
-        super().__init__(tokens, sym_fns)
-
     def cmd_str(self):
-        val = 'A' if self.arg1 == 'constant' else 'M'
+        val = 'A' if self.sym_fns.is_constant(self.arg1) else 'M'
         return unindent_multiline(f'''
             {self.sym_fns.get(self.arg1)(self.arg2)}
             D={val}
@@ -191,9 +224,6 @@ class PushCommand(StackChangeCommand):
 
 
 class PopCommand(StackChangeCommand):
-    def __init__(self, tokens, sym_fns):
-        super().__init__(tokens, sym_fns)
-
     def cmd_str(self):
         return unindent_multiline(f'''
             {self.sym_fns.get(self.arg1)(self.arg2)}
@@ -208,14 +238,124 @@ class PopCommand(StackChangeCommand):
             A=M
             M=D
             ''')
+        
+
+class FunctionCommand(StackChangeCommand):
+    def cmd_str(self):
+        push = PushCommand(['constant', '0'], self.sym_fns)
+        pushes = '\n'.join(push.cmd_str() for _ in range(int(self.arg2)))
+        return unindent_multiline(f'''
+            ({self.arg1})
+            {pushes}
+            ''')
+    
+    
+class ReturnCommand(Command):
+    sym_fns = None
+
+    def __init__(self, sym_fns):
+        self.sym_fns = sym_fns
+
+    def cmd_str(self):
+        pop = PopCommand(['argument', '0'], self.sym_fns)
+        move_ptrs = '\n'.join(self.move_pointer(lbl) 
+            for lbl in 'THAT THIS ARG LCL'.split())
+        return unindent_multiline(f'''
+            @LCL
+            D=M
+            @R15
+            M=D
+            @5
+            A=D-A
+            D=M
+            @R14
+            M=D
+            {pop.cmd_str()}
+            D=A
+            @SP
+            M=D+1
+            {move_ptrs}
+            @R14
+            A=M
+            0;JMP
+            ''')
+
+    def move_pointer(self, ptr_label):
+        return unindent_multiline(f'''
+            @R15
+            M=M-1
+            A=M
+            D=M
+            @{ptr_label}
+            M=D
+            ''')
+
+
+class CallCommand(StackChangeCommand):
+    func_usage = {}
+
+    def cmd_str(self):
+        jump_label = self.create_label()
+        return unindent_multiline(f'''
+            @{jump_label}
+            D=A
+            @SP
+            A=M
+            M=D
+            {self.increment_sp()}
+            {PushCommand(['LCL', '0'], self.sym_fns).cmd_str()}
+            {PushCommand(['ARG', '0'], self.sym_fns).cmd_str()}
+            {PushCommand(['THIS', '0'], self.sym_fns).cmd_str()}
+            {PushCommand(['THAT', '0'], self.sym_fns).cmd_str()}
+            @SP
+            D=M
+            @5
+            D=D-A
+            @{self.arg2}
+            D=D-A
+            @ARG
+            M=D
+            @SP
+            D=M
+            @LCL
+            M=D
+            @{self.arg1}
+            0;JMP
+            ({jump_label})
+            ''')
+
+    def create_label(self):
+        if self.arg1 not in CallCommand.func_usage:
+            CallCommand.func_usage[self.arg1] = 0
+        CallCommand.func_usage[self.arg1] += 1
+        return f'return${self.arg1}.{CallCommand.func_usage[self.arg1]}'
+
+
+class InitCommand(Command):
+    sym_fns = None
+
+    def __init__(self, sym_fns):
+        self.sym_fns = sym_fns
+
+    def cmd_str(self):
+        caller = CallCommand(['Sys.init', '0'], self.sym_fns)
+        return unindent_multiline(f'''
+            @256
+            D=A
+            @SP
+            M=D
+            {caller.cmd_str()}
+            ''')
 
 
 class Parser:
     f = None
     sym_fns = None
+    name = ''
 
     def __init__(self, f, name):
         self.f = f
+        self.name = name
         self.sym_fns = SymbolFns(name)
 
     def parse(self):
@@ -231,14 +371,24 @@ class Parser:
     def create_command(self, line):
         tokens = line.split()
 
-        if tokens[0] == 'return':
-            return ReturnCommand(tokens)
         if tokens[0] in operations_dict.keys():
             return ArithmeticCommand(tokens[0])
         if tokens[0] == 'push':
             return PushCommand(tokens[1:], self.sym_fns)
         if tokens[0] == 'pop':
             return PopCommand(tokens[1:], self.sym_fns)
+        if tokens[0] == 'label':
+            return LabelCommand(self.name, tokens[1])
+        if tokens[0] == 'goto':
+            return GotoCommand(self.name, tokens[1])
+        if tokens[0] == 'if-goto':
+            return IfGotoCommand(self.name, tokens[1])
+        if tokens[0] == 'function':
+            return FunctionCommand(tokens[1:], self.sym_fns)
+        if tokens[0] == 'return':
+            return ReturnCommand(self.sym_fns)
+        if tokens[0] == 'call':
+            return CallCommand(tokens[1:], self.sym_fns)
 
         raise Exception('invalid instruction')
 
@@ -253,23 +403,23 @@ def change_ext(filename, ext):
     return os.path.join(os.path.dirname(filename), f'{basename}.{ext}')
 
 
-def translate_file(name):
-    filename = os.path.join(script_dir, name)
-    out_file = change_ext(filename, 'asm')
+def translate_folder(name):
+    folder = os.path.join(script_dir, name)
+    basename = os.path.basename(folder)
+    out_file = os.path.join(folder, f'{basename}.asm')
 
-    basename = os.path.basename(filename)
-    basename = basename.split('.')[0]
-
-    with open(filename, 'r') as f:
-        cmds = list(Parser(f, basename).parse())
+    vm_files = (os.path.join(folder, n) 
+        for n in os.listdir(folder)
+        if n.endswith('.vm') and not n.startswith('.'))
+    
+    cmds = [InitCommand(SymbolFns(basename))]
+    for filename in vm_files:
+        with open(filename, 'r') as f:
+            cmds += list(Parser(f, basename).parse())
 
     with open(out_file, 'w') as f:    
         f.write(translate(cmds))
 
 
 if __name__ == '__main__':
-    # filename = os.path.join(script_dir, 'MemoryAccess/BasicTest/BasicTest.vm')
-    # translate_file('MemoryAccess/PointerTest/PointerTest.vm')
-    # translate_file('StackArithmetic/SimpleAdd/SimpleAdd.vm')
-    translate_file('StackArithmetic/StackTest/StackTest.vm')
-    # translate_file('MemoryAccess/StaticTest/StaticTest.vm')
+    translate_folder('FunctionCalls/StaticsTest')
